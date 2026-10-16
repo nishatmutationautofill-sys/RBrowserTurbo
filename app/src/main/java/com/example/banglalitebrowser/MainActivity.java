@@ -10,6 +10,7 @@ import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
 import android.graphics.Bitmap;
+import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
@@ -80,6 +81,7 @@ public class MainActivity extends Activity {
         String url = "";
         String title = "";
         Bundle state;                                        // saved back/forward list while the WebView is released
+        Bitmap thumbnail;                                     // small in-memory preview; never stores full-page images
         boolean home = true;                                 // showing the home screen instead of a page
     }
 
@@ -101,6 +103,9 @@ public class MainActivity extends Activity {
     private boolean blockerEnabled, dataSaver;
     private final AtomicInteger blockedCount = new AtomicInteger();
     private String[] pendingDownload;
+    private View fullscreenView;
+    private WebChromeClient.CustomViewCallback fullscreenCallback;
+    private final java.util.Set<String> offeredVideoUrls = new java.util.HashSet<>();
 
     // ===================================================== lifecycle
 
@@ -149,7 +154,7 @@ public class MainActivity extends Activity {
     }
 
     @Override protected void onDestroy() {
-        for (Tab t : new ArrayList<>(tabs)) destroyWeb(t);
+        for (Tab t : new ArrayList<>(tabs)) { destroyWeb(t); clearTabThumbnail(t); }
         tabs.clear();
         super.onDestroy();
     }
@@ -287,6 +292,21 @@ public class MainActivity extends Activity {
         root.post(() -> content.requestFocus());
     }
 
+    private void exitFullscreen() {
+        if (fullscreenView == null) return;
+        content.removeView(fullscreenView);
+        fullscreenView = null;
+        if (fullscreenCallback != null) fullscreenCallback.onCustomViewHidden();
+        fullscreenCallback = null;
+        getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);
+        render(cur());
+    }
+
+    @Override public void onBackPressed() {
+        if (fullscreenView != null) { exitFullscreen(); return; }
+        goBackOrHome();
+    }
+
     private void goBackOrHome() {
         Tab t = cur();
         if (t != null && !t.home && t.web != null && t.web.canGoBack()) t.web.goBack(); else showHome();
@@ -362,33 +382,123 @@ public class MainActivity extends Activity {
     }
 
     private void showMenu(View anchor) {
-        PopupMenu pm = new PopupMenu(this, anchor, Gravity.END);
-        Menu m = pm.getMenu();
-        m.add(0, 1, 0, "নতুন ট্যাব");
-        m.add(0, 2, 0, "বুকমার্কে যোগ করুন");
-        m.add(0, 3, 0, "বুকমার্ক");
-        m.add(0, 4, 0, "হিস্টোরি");
-        m.add(0, 5, 0, "ডাউনলোড");
-        m.add(0, 6, 0, "লিংক শেয়ার");
-        m.add(0, 7, 0, "অ্যাড ও ট্র্যাকার ব্লকার (" + blockedCount.get() + ")").setCheckable(true).setChecked(blockerEnabled);
-        m.add(0, 8, 0, "ডেটা সেভার (ছবি বন্ধ)").setCheckable(true).setChecked(dataSaver);
-        m.add(0, 9, 0, "ক্যাশ ও কুকি মুছুন");
-        pm.setOnMenuItemClickListener(item -> {
-            switch (item.getItemId()) {
-                case 1: newTab(null, true); break;
-                case 2: addBookmark(); break;
-                case 3: showSavedList(true); break;
-                case 4: showSavedList(false); break;
-                case 5: showDownloads(); break;
-                case 6: shareCurrentPage(); break;
-                case 7: toggleBlocker(); break;
-                case 8: toggleDataSaver(); break;
-                case 9: confirmClearData(); break;
-                default: return false;
+        // Lightweight custom menu: no third-party UI dependencies.
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setPadding(dp(18), dp(16), dp(18), dp(14));
+        panel.setBackground(roundRect(Color.WHITE, dp(22), LINE));
+
+        LinearLayout heading = new LinearLayout(this);
+        heading.setGravity(Gravity.CENTER_VERTICAL);
+        ImageView logo = new ImageView(this);
+        logo.setImageResource(R.drawable.ic_browser_logo);
+        logo.setPadding(dp(7), dp(7), dp(7), dp(7));
+        logo.setBackground(roundRect(SOFT, dp(14), SOFT));
+        heading.addView(logo, new LinearLayout.LayoutParams(dp(44), dp(44)));
+        LinearLayout titleCol = new LinearLayout(this);
+        titleCol.setOrientation(LinearLayout.VERTICAL);
+        titleCol.setPadding(dp(12), 0, 0, 0);
+        TextView title = text("Rishat Browser", 18, INK);
+        title.setTypeface(Typeface.DEFAULT_BOLD);
+        titleCol.addView(title);
+        titleCol.addView(text("দ্রুত অ্যাক্সেস ও টুলস", 12, MUTED));
+        heading.addView(titleCol, new LinearLayout.LayoutParams(0, -2, 1));
+        TextView close = text("×", 27, MUTED);
+        close.setGravity(Gravity.CENTER);
+        close.setBackground(roundRect(BG, dp(22), BG));
+        heading.addView(close, new LinearLayout.LayoutParams(dp(36), dp(36)));
+        panel.addView(heading);
+
+        TextView section = text("ব্রাউজার", 12, MUTED);
+        section.setTypeface(Typeface.DEFAULT_BOLD);
+        LinearLayout.LayoutParams secP = new LinearLayout.LayoutParams(-1, -2);
+        secP.topMargin = dp(18); secP.bottomMargin = dp(8);
+        panel.addView(section, secP);
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(false);
+        LinearLayout grid = new LinearLayout(this);
+        grid.setOrientation(LinearLayout.VERTICAL);
+        String[][] items = {
+            {"＋", "নতুন ট্যাব", "নতুন পেজ খুলুন", "1"},
+            {"☆", "বুকমার্কে যোগ", "এই পেজ সংরক্ষণ", "2"},
+            {"★", "বুকমার্ক", "সংরক্ষিত পেজ", "3"},
+            {"◷", "হিস্টোরি", "আগের পেজগুলো", "4"},
+            {"⇩", "ডাউনলোড", "ফাইল ও প্রগ্রেস", "5"},
+            {"↗", "লিংক শেয়ার", "পেজ শেয়ার করুন", "6"},
+            {"盾", "অ্যাড ব্লকার", "ব্লক: " + blockedCount.get(), "7"},
+            {"◐", "ডেটা সেভার", dataSaver ? "চালু · ছবি বন্ধ" : "ছবি লোডিং নিয়ন্ত্রণ", "8"},
+            {"⌫", "ক্যাশ ও কুকি", "ব্রাউজিং ডেটা মুছুন", "9"}
+        };
+        for (int i = 0; i < items.length; i += 2) {
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            for (int j = i; j < Math.min(i + 2, items.length); j++) {
+                final int id = Integer.parseInt(items[j][3]);
+                LinearLayout tile = new LinearLayout(this);
+                tile.setOrientation(LinearLayout.VERTICAL);
+                tile.setGravity(Gravity.CENTER_VERTICAL);
+                tile.setPadding(dp(12), dp(11), dp(10), dp(10));
+                tile.setBackground(roundRect(BG, dp(15), LINE));
+                TextView glyph = text(items[j][0], 21, GREEN);
+                glyph.setGravity(Gravity.CENTER);
+                glyph.setBackground(roundRect(SOFT, dp(12), SOFT));
+                tile.addView(glyph, new LinearLayout.LayoutParams(dp(38), dp(36)));
+                TextView label = text(items[j][1], 13, INK);
+                label.setTypeface(Typeface.DEFAULT_BOLD);
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
+                lp.topMargin = dp(8);
+                tile.addView(label, lp);
+                TextView detail = text(items[j][2], 10, MUTED);
+                tile.addView(detail);
+                LinearLayout.LayoutParams tp = new LinearLayout.LayoutParams(0, dp(105), 1);
+                if ((j - i) == 0) tp.rightMargin = dp(5); else tp.leftMargin = dp(5);
+                row.addView(tile, tp);
+                tile.setOnClickListener(v -> {
+                    // Dismiss before launching dialogs or navigating.
+                    AlertDialog d = (AlertDialog) panel.getTag();
+                    if (d != null) d.dismiss();
+                    switch (id) {
+                        case 1: newTab(null, true); break;
+                        case 2: addBookmark(); break;
+                        case 3: showSavedList(true); break;
+                        case 4: showSavedList(false); break;
+                        case 5: showDownloads(); break;
+                        case 6: shareCurrentPage(); break;
+                        case 7: toggleBlocker(); break;
+                        case 8: toggleDataSaver(); break;
+                        case 9: confirmClearData(); break;
+                    }
+                });
             }
-            return true;
+            LinearLayout.LayoutParams rp = new LinearLayout.LayoutParams(-1, -2);
+            rp.bottomMargin = dp(8);
+            grid.addView(row, rp);
+        }
+        scroll.addView(grid);
+        panel.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
+        TextView footer = text("Rishat Browser  •  হালকা ও দ্রুত", 11, MUTED);
+        footer.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams fp = new LinearLayout.LayoutParams(-1, dp(30));
+        fp.topMargin = dp(4);
+        panel.addView(footer, fp);
+
+        AlertDialog dialog = new AlertDialog.Builder(this).setView(panel).create();
+        panel.setTag(dialog);
+        close.setOnClickListener(v -> dialog.dismiss());
+        dialog.setOnShowListener(ignored -> {
+            if (dialog.getWindow() != null) {
+                dialog.getWindow().setBackgroundDrawableResource(android.R.color.transparent);
+                dialog.getWindow().setLayout(Math.min(getResources().getDisplayMetrics().widthPixels - dp(28), dp(380)),
+                        Math.min(getResources().getDisplayMetrics().heightPixels - dp(64), dp(570)));
+            }
         });
-        pm.show();
+        dialog.show();
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().setBackgroundDrawableResource(android.R.color.transparent);
+            dialog.getWindow().setLayout(Math.min(getResources().getDisplayMetrics().widthPixels - dp(28), dp(380)),
+                    Math.min(getResources().getDisplayMetrics().heightPixels - dp(64), dp(570)));
+        }
     }
 
     // ===================================================== tabs
@@ -465,21 +575,28 @@ public class MainActivity extends Activity {
     private void closeTab(int index) {
         if (index < 0 || index >= tabs.size()) return;
         boolean wasActive = index == activeTab;
-        destroyWeb(tabs.remove(index));
+        Tab removed = tabs.remove(index);
+        destroyWeb(removed);
+        clearTabThumbnail(removed);
         if (tabs.isEmpty()) { activeTab = -1; newTab(null, true); return; }
         if (wasActive) { activeTab = -1; switchToTab(Math.min(index, tabs.size() - 1)); }
         else { if (index < activeTab) activeTab--; updateTabCount(); }
     }
 
     private void closeAllTabs() {
-        for (Tab t : new ArrayList<>(tabs)) destroyWeb(t);
+        for (Tab t : new ArrayList<>(tabs)) { destroyWeb(t); clearTabThumbnail(t); }
         tabs.clear();
         activeTab = -1;
         newTab(null, true);
     }
 
+    private void clearTabThumbnail(Tab t) {
+        if (t != null && t.thumbnail != null && !t.thumbnail.isRecycled()) t.thumbnail.recycle();
+        if (t != null) t.thumbnail = null;
+    }
+
     private void destroyWeb(Tab t) {
-        if (t.web == null) return;
+        if (t == null || t.web == null) return;
         content.removeView(t.web);
         t.web.stopLoading();
         t.web.destroy();
@@ -510,23 +627,95 @@ public class MainActivity extends Activity {
     }
 
     private void showTabsDialog() {
-        String[] labels = new String[tabs.size() + 1];
-        for (int i = 0; i < tabs.size(); i++) {
-            Tab t = tabs.get(i);
-            String name = t.home ? "নতুন ট্যাব" : (TextUtils.isEmpty(t.title) ? t.url : t.title);
-            labels[i] = (i == activeTab ? "✓ " : "") + name;
-        }
-        labels[tabs.size()] = "＋ নতুন ট্যাব";
+        LinearLayout list = new LinearLayout(this);
+        list.setOrientation(LinearLayout.VERTICAL);
+        list.setPadding(dp(12), dp(4), dp(12), dp(4));
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(true);
+        scroll.addView(list);
         final AlertDialog d = new AlertDialog.Builder(this)
-                .setTitle("ট্যাব (" + tabs.size() + ") • চেপে ধরলে বন্ধ")
-                .setItems(labels, (dd, which) -> { if (which == tabs.size()) newTab(null, true); else switchToTab(which); })
+                .setTitle("ট্যাব (" + tabs.size() + ") • বন্ধ করতে × চাপুন")
+                .setView(scroll)
+                .setPositiveButton("＋ নতুন ট্যাব", (dd, w) -> newTab(null, true))
                 .setNeutralButton("সব বন্ধ", (dd, w) -> closeAllTabs())
                 .setNegativeButton("বন্ধ", null).create();
+
+        for (int i = 0; i < tabs.size(); i++) {
+            final int index = i;
+            Tab t = tabs.get(i);
+            LinearLayout card = new LinearLayout(this);
+            card.setOrientation(LinearLayout.HORIZONTAL);
+            card.setGravity(Gravity.CENTER_VERTICAL);
+            card.setPadding(dp(8), dp(8), dp(8), dp(8));
+            GradientDrawable bg = new GradientDrawable();
+            bg.setColor(i == activeTab ? SOFT : Color.WHITE);
+            bg.setCornerRadius(dp(12));
+            bg.setStroke(dp(1), i == activeTab ? GREEN : LINE);
+            card.setBackground(bg);
+            LinearLayout.LayoutParams cp = new LinearLayout.LayoutParams(-1, dp(94));
+            cp.bottomMargin = dp(8);
+            list.addView(card, cp);
+
+            ImageView preview = new ImageView(this);
+            preview.setBackgroundColor(Color.rgb(238, 243, 241));
+            preview.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            if (t.thumbnail != null && !t.thumbnail.isRecycled()) preview.setImageBitmap(t.thumbnail);
+            else {
+                preview.setImageResource(android.R.drawable.ic_menu_view);
+                preview.setScaleType(ImageView.ScaleType.CENTER);
+            }
+            card.addView(preview, new LinearLayout.LayoutParams(dp(112), dp(76)));
+
+            LinearLayout info = new LinearLayout(this);
+            info.setOrientation(LinearLayout.VERTICAL);
+            info.setGravity(Gravity.CENTER_VERTICAL);
+            info.setPadding(dp(10), 0, dp(4), 0);
+            card.addView(info, new LinearLayout.LayoutParams(0, -1, 1));
+            TextView title = new TextView(this);
+            title.setText((i == activeTab ? "✓ " : "") + (t.home ? "নতুন ট্যাব" :
+                    (TextUtils.isEmpty(t.title) ? t.url : t.title)));
+            title.setTextColor(INK);
+            title.setTextSize(14);
+            title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+            title.setMaxLines(2);
+            title.setEllipsize(TextUtils.TruncateAt.END);
+            info.addView(title);
+            TextView url = new TextView(this);
+            url.setText(t.home ? "দ্রুত ব্রাউজিং" : t.url);
+            url.setTextColor(MUTED);
+            url.setTextSize(11);
+            url.setSingleLine(true);
+            url.setEllipsize(TextUtils.TruncateAt.MIDDLE);
+            info.addView(url);
+
+            TextView close = new TextView(this);
+            close.setText("×");
+            close.setTextSize(25);
+            close.setTextColor(MUTED);
+            close.setGravity(Gravity.CENTER);
+            card.addView(close, new LinearLayout.LayoutParams(dp(32), dp(52)));
+            close.setOnClickListener(v -> { d.dismiss(); closeTab(index); });
+            card.setOnClickListener(v -> { d.dismiss(); switchToTab(index); });
+        }
         d.show();
-        d.getListView().setOnItemLongClickListener((p, v, pos, id) -> {
-            if (pos < tabs.size()) { d.dismiss(); closeTab(pos); }
-            return true;
-        });
+    }
+
+    /** Captures a tiny preview only; avoids retaining full-resolution page screenshots. */
+    private void captureTabThumbnail(Tab tab, WebView view) {
+        if (view == null || view.getWidth() <= 0 || view.getHeight() <= 0) return;
+        try {
+            int width = 240;
+            int height = Math.max(100, Math.min(150, (int) (width * (view.getHeight() / (float) view.getWidth()))));
+            Bitmap small = Bitmap.createBitmap(width, height, Bitmap.Config.RGB_565);
+            Canvas canvas = new Canvas(small);
+            canvas.scale(width / (float) view.getWidth(), height / (float) view.getHeight());
+            view.draw(canvas);
+            Bitmap old = tab.thumbnail;
+            tab.thumbnail = small;
+            if (old != null && !old.isRecycled()) old.recycle();
+        } catch (OutOfMemoryError ignored) {
+            // Thumbnails are optional; browsing must remain available on low-memory devices.
+        } catch (RuntimeException ignored) { }
     }
 
     private void restoreTabs() {
@@ -618,6 +807,22 @@ public class MainActivity extends Activity {
                 return true;
             }
 
+            @Override public void onLoadResource(WebView view, String resourceUrl) {
+                String lower = resourceUrl == null ? "" : resourceUrl.toLowerCase(java.util.Locale.ROOT);
+                if (!(lower.contains(".mp4") || lower.contains(".webm") || lower.contains(".m4v")
+                        || lower.contains(".mov") || lower.contains(".m3u8"))) return;
+                if (!offeredVideoUrls.add(resourceUrl)) return;
+                new Handler(Looper.getMainLooper()).post(() -> {
+                    if (isFinishing() || !isActive(tab)) return;
+                    new AlertDialog.Builder(MainActivity.this).setTitle("ভিডিও লিংক শনাক্ত")
+                            .setMessage("এই পেজে একটি ভিডিও লিংক পাওয়া গেছে। ডাউনলোড করতে চান?")
+                            .setPositiveButton("ডাউনলোড", (d, w) -> requestDownload(resourceUrl,
+                                    view.getSettings().getUserAgentString(), null,
+                                    lower.contains(".m3u8") ? "application/vnd.apple.mpegurl" : "video/*"))
+                            .setNegativeButton("না", null).show();
+                });
+            }
+
             @Override public void onPageStarted(WebView view, String url, Bitmap favicon) {
                 tab.url = url;
                 tab.home = false;
@@ -638,6 +843,7 @@ public class MainActivity extends Activity {
                     tab.title = TextUtils.isEmpty(title) ? url : title;
                     store.addHistory(tab.title, url);
                 }
+                captureTabThumbnail(tab, view);
                 if (isActive(tab)) {
                     setLoading(false);
                     progressBar.setVisibility(View.INVISIBLE);
@@ -662,6 +868,19 @@ public class MainActivity extends Activity {
         });
 
         web.setWebChromeClient(new WebChromeClient() {
+            @Override public void onShowCustomView(View view, CustomViewCallback callback) {
+                if (fullscreenView != null) { callback.onCustomViewHidden(); return; }
+                fullscreenView = view;
+                fullscreenCallback = callback;
+                content.addView(view, new FrameLayout.LayoutParams(-1, -1));
+                view.bringToFront();
+                if (Build.VERSION.SDK_INT >= 19) getWindow().getDecorView().setSystemUiVisibility(
+                        View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                        | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY | View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
+            }
+
+            @Override public void onHideCustomView() { exitFullscreen(); }
+
             @Override public void onProgressChanged(WebView view, int progress) {
                 if (isActive(tab)) {
                     progressBar.setProgress(progress);
@@ -800,7 +1019,7 @@ public class MainActivity extends Activity {
         String[] labels = new String[items.size()];
         for (int i = 0; i < labels.length; i++) {
             Store.Item it = items.get(i);
-            labels[i] = (TextUtils.isEmpty(it.title) ? it.url : it.title) + "\n" + it.url;
+            labels[i] = it.url;
         }
         AlertDialog.Builder b = new AlertDialog.Builder(this).setTitle(title + " • চেপে ধরলে মুছুন")
                 .setItems(labels, (d, which) -> loadInCurrentTab(items.get(which).url))
