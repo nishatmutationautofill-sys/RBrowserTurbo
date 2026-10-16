@@ -767,43 +767,44 @@ public class MainActivity extends Activity {
      * be directly downloadable and are deliberately not advertised.
      */
     private void installVideoDownloadDetector(WebView web) {
-        String js = "(function(){try{if(window.__rishatVideoDetector)return;window.__rishatVideoDetector=true;"
-                + "var active=null,btn=document.createElement('a');"
-                + "btn.id='__rishat_video_download';btn.href='#';btn.textContent='⬇';"
+        String js = "(function(){try{if(window.__rishatVideoDetectorV3)return;window.__rishatVideoDetectorV3=true;"
+                + "var active=null,btn=document.createElement('button');"
+                + "btn.id='__rishat_video_download';btn.type='button';btn.textContent='⬇';"
                 + "btn.title='ভিডিও ডাউনলোড';btn.setAttribute('aria-label','ভিডিও ডাউনলোড');"
-                + "btn.style.cssText='display:none;position:fixed;z-index:2147483647;width:34px;height:34px;"
-                + "line-height:34px;text-align:center;border-radius:18px;background:rgba(20,105,87,.96);"
-                + "color:white;font:bold 21px sans-serif;text-decoration:none;box-shadow:0 2px 8px #0007;"
-                + "border:1px solid #fff;';document.documentElement.appendChild(btn);"
-                + "function adLike(v){var e=v;for(var i=0;e&&i<5;i++,e=e.parentElement){"
-                + "var x=((e.id||'')+' '+(typeof e.className==='string'?e.className:'')+' '+"
-                + "(e.getAttribute&&e.getAttribute('data-ad')||'')).toLowerCase();"
-                + "if(/(^|[ _-])(ad|ads|advert|advertisement|sponsor|preroll|midroll|ima|vast)([ _-]|$)/.test(x))return true;}"
-                + "var u=(v.currentSrc||v.src||'').toLowerCase();"
-                + "return /doubleclick\\.net|googlesyndication|googleadservices|imasdk|adservice|\\/ads?\\/|vast\\./.test(u);}"
-                + "function valid(v){if(!v||!v.isConnected||v.paused||v.ended||adLike(v))return false;"
-                + "var r=v.getBoundingClientRect();if(r.width<180||r.height<100)return false;"
-                + "var u=v.currentSrc||v.src||'';if(!/^https?:\\/\\//i.test(u))return false;"
-                + "if(/\\.m3u8(?:$|[?#])|\\.mpd(?:$|[?#])/i.test(u))return false;"
-                + "if(v.duration>0&&v.duration<2)return false;return true;}"
-                + "function place(){if(!valid(active)){btn.style.display='none';return;}"
-                + "var r=active.getBoundingClientRect();btn.style.display='block';"
-                + "btn.style.left=Math.max(4,Math.min(window.innerWidth-40,r.right-40))+'px';"
-                + "btn.style.top=Math.max(4,Math.min(window.innerHeight-40,r.top+6))+'px';}"
-                + "function choose(v){if(valid(v)){active=v;place();}else if(active===v){active=null;place();}}"
-                + "function scan(){var vs=document.querySelectorAll('video');for(var i=0;i<vs.length;i++){"
-                + "if(!vs[i].__rishatBound){vs[i].__rishatBound=true;vs[i].addEventListener('play',function(){choose(this);},true);"
-                + "vs[i].addEventListener('playing',function(){choose(this);},true);"
-                + "vs[i].addEventListener('pause',function(){if(active===this){active=null;place();}},true);"
-                + "vs[i].addEventListener('ended',function(){if(active===this){active=null;place();}},true);}}"
-                + "if(active)place();}"
-                + "btn.addEventListener('click',function(e){e.preventDefault();e.stopPropagation();"
-                + "if(!valid(active))return;var u=active.currentSrc||active.src||'';"
-                + "window.location.href='rishat-download://download?url='+encodeURIComponent(u);},true);"
+                + "btn.style.cssText='display:none;position:fixed;z-index:2147483647;width:40px;height:40px;"
+                + "padding:0;line-height:38px;text-align:center;border-radius:50%;background:rgba(20,105,87,.98);"
+                + "color:white;font:bold 24px sans-serif;box-shadow:0 2px 8px #0009;border:2px solid white;cursor:pointer;';"
+                + "(document.body||document.documentElement).appendChild(btn);"
+                + "function adSource(v){var u=((v.currentSrc||v.src||'')+' '+(v.getAttribute('src')||'')).toLowerCase();"
+                + "return /doubleclick\\.net|googlesyndication|googleadservices|imasdk|adservice|\\/vast[\\/?]|\\/ads?\\//.test(u); }"
+                + "function visible(v){if(!v||!v.isConnected||v.paused||v.ended||v.readyState<2||adSource(v))return false;"
+                + "var r=v.getBoundingClientRect(),st=getComputedStyle(v);"
+                + "if(r.width<160||r.height<90||r.bottom<0||r.right<0||r.top>innerHeight||r.left>innerWidth||st.display==='none'||st.visibility==='hidden'||Number(st.opacity)===0)return false;"
+                + "if(v.duration>0&&v.duration<7)return false;return true;}"
+                + "function place(){if(!visible(active)){btn.style.display='none';return;}var r=active.getBoundingClientRect();"
+                + "btn.style.display='block';btn.style.left=Math.max(4,Math.min(innerWidth-44,r.right-46))+'px';"
+                + "btn.style.top=Math.max(4,Math.min(innerHeight-44,r.top+6))+'px';}"
+                + "function choose(v){if(!visible(v))return;"
+                + "if(!active||!visible(active)){active=v;}else{var a=active.getBoundingClientRect(),b=v.getBoundingClientRect();"
+                + "if((b.width*b.height)>(a.width*a.height))active=v;}place();}"
+                + "function bind(v){if(v.__rishatBoundV3)return;v.__rishatBoundV3=true;"
+                + "['play','playing','loadeddata','canplay','durationchange','timeupdate','progress'].forEach(function(n){v.addEventListener(n,function(){"
+                + "if(!v.paused){choose(v);setTimeout(function(){choose(v);},450);setTimeout(function(){choose(v);},1400);}},true);});"
+                + "v.addEventListener('pause',function(){if(active===v){active=null;setTimeout(scan,250);}},true);"
+                + "v.addEventListener('ended',function(){if(active===v){active=null;setTimeout(scan,250);}},true);"
+                + "v.addEventListener('emptied',function(){if(active===v){active=null;place();}},true);"
+                + "}"
+                + "function scanDoc(d){try{var vs=d.querySelectorAll('video');for(var i=0;i<vs.length;i++)bind(vs[i]);"
+                + "var fs=d.querySelectorAll('iframe');for(var j=0;j<fs.length;j++){try{if(fs[j].contentDocument)scanDoc(fs[j].contentDocument);}catch(ignore){}}}catch(ignore){}}"
+                + "function scan(){scanDoc(document);if(active)place();}"
+                + "btn.addEventListener('click',function(e){e.preventDefault();e.stopPropagation();if(!visible(active))return;"
+                + "var u=active.currentSrc||active.src||'';if(/^https?:\\/\\//i.test(u)){"
+                + "window.location.href='rishat-download://download?url='+encodeURIComponent(u);}else{"
+                + "window.location.href='rishat-download://unsupported';}},true);"
                 + "window.addEventListener('scroll',place,true);window.addEventListener('resize',place);"
-                + "document.addEventListener('play',function(e){if(e.target&&e.target.tagName==='VIDEO')choose(e.target);},true);"
-                + "scan();new MutationObserver(scan).observe(document.documentElement,{childList:true,subtree:true});"
-                + "setInterval(scan,1200);}catch(e){}})();";
+                + "document.addEventListener('play',function(e){if(e.target&&e.target.tagName==='VIDEO')setTimeout(function(){choose(e.target);},350);},true);"
+                + "scan();new MutationObserver(scan).observe(document.documentElement,{childList:true,subtree:true,attributes:true,attributeFilter:['src','class','style']});"
+                + "setInterval(scan,650);}catch(e){}})();";
         if (Build.VERSION.SDK_INT >= 19) web.evaluateJavascript(js, null);
         else web.loadUrl("javascript:" + js);
     }
@@ -847,7 +848,7 @@ public class MainActivity extends Activity {
                 }
                 if ("rishat-download".equalsIgnoreCase(scheme)) {
                     String mediaUrl = uri.getQueryParameter("url");
-                    if (request.hasGesture() && mediaUrl != null
+                    if (mediaUrl != null
                             && (mediaUrl.startsWith("https://") || mediaUrl.startsWith("http://"))) {
                         requestDownload(mediaUrl, view.getSettings().getUserAgentString(), null, "video/*");
                     } else {
