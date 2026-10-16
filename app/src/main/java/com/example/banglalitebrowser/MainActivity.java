@@ -160,6 +160,8 @@ public class MainActivity extends Activity {
     }
 
     @Override public void onBackPressed() {
+        // Exit immersive video first, then preserve normal browser back/tab behavior.
+        if (fullscreenView != null) { exitFullscreen(); return; }
         Tab t = cur();
         if (t != null && !t.home) {
             if (t.web != null && t.web.canGoBack()) t.web.goBack(); else showHome();
@@ -300,11 +302,6 @@ public class MainActivity extends Activity {
         fullscreenCallback = null;
         getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);
         render(cur());
-    }
-
-    @Override public void onBackPressed() {
-        if (fullscreenView != null) { exitFullscreen(); return; }
-        goBackOrHome();
     }
 
     private void goBackOrHome() {
