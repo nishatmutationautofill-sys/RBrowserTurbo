@@ -760,6 +760,54 @@ public class MainActivity extends Activity {
 
     // ===================================================== WebView
 
+    /**
+     * Adds a small download affordance only while a likely user-facing HTML5 video is
+     * actually playing. Unlike URL sniffing, this avoids offering downloads for every
+     * video/ad asset fetched by the page. DRM, blob URLs and segmented streams may not
+     * be directly downloadable and are deliberately not advertised.
+     */
+    private void installVideoDownloadDetector(WebView web) {
+        String js = "(function(){try{if(window.__rishatVideoDetector)return;window.__rishatVideoDetector=true;"
+                + "var active=null,btn=document.createElement('a');"
+                + "btn.id='__rishat_video_download';btn.href='#';btn.textContent='⬇';"
+                + "btn.title='ভিডিও ডাউনলোড';btn.setAttribute('aria-label','ভিডিও ডাউনলোড');"
+                + "btn.style.cssText='display:none;position:fixed;z-index:2147483647;width:34px;height:34px;"
+                + "line-height:34px;text-align:center;border-radius:18px;background:rgba(20,105,87,.96);"
+                + "color:white;font:bold 21px sans-serif;text-decoration:none;box-shadow:0 2px 8px #0007;"
+                + "border:1px solid #fff;';document.documentElement.appendChild(btn);"
+                + "function adLike(v){var e=v;for(var i=0;e&&i<5;i++,e=e.parentElement){"
+                + "var x=((e.id||'')+' '+(typeof e.className==='string'?e.className:'')+' '+"
+                + "(e.getAttribute&&e.getAttribute('data-ad')||'')).toLowerCase();"
+                + "if(/(^|[ _-])(ad|ads|advert|advertisement|sponsor|preroll|midroll|ima|vast)([ _-]|$)/.test(x))return true;}"
+                + "var u=(v.currentSrc||v.src||'').toLowerCase();"
+                + "return /doubleclick\\.net|googlesyndication|googleadservices|imasdk|adservice|\\/ads?\\/|vast\\./.test(u);}"
+                + "function valid(v){if(!v||!v.isConnected||v.paused||v.ended||adLike(v))return false;"
+                + "var r=v.getBoundingClientRect();if(r.width<180||r.height<100)return false;"
+                + "var u=v.currentSrc||v.src||'';if(!/^https?:\\/\\//i.test(u))return false;"
+                + "if(/\\.m3u8(?:$|[?#])|\\.mpd(?:$|[?#])/i.test(u))return false;"
+                + "if(v.duration>0&&v.duration<2)return false;return true;}"
+                + "function place(){if(!valid(active)){btn.style.display='none';return;}"
+                + "var r=active.getBoundingClientRect();btn.style.display='block';"
+                + "btn.style.left=Math.max(4,Math.min(window.innerWidth-40,r.right-40))+'px';"
+                + "btn.style.top=Math.max(4,Math.min(window.innerHeight-40,r.top+6))+'px';}"
+                + "function choose(v){if(valid(v)){active=v;place();}else if(active===v){active=null;place();}}"
+                + "function scan(){var vs=document.querySelectorAll('video');for(var i=0;i<vs.length;i++){"
+                + "if(!vs[i].__rishatBound){vs[i].__rishatBound=true;vs[i].addEventListener('play',function(){choose(this);},true);"
+                + "vs[i].addEventListener('playing',function(){choose(this);},true);"
+                + "vs[i].addEventListener('pause',function(){if(active===this){active=null;place();}},true);"
+                + "vs[i].addEventListener('ended',function(){if(active===this){active=null;place();}},true);}}"
+                + "if(active)place();}"
+                + "btn.addEventListener('click',function(e){e.preventDefault();e.stopPropagation();"
+                + "if(!valid(active))return;var u=active.currentSrc||active.src||'';"
+                + "window.location.href='rishat-download://download?url='+encodeURIComponent(u);},true);"
+                + "window.addEventListener('scroll',place,true);window.addEventListener('resize',place);"
+                + "document.addEventListener('play',function(e){if(e.target&&e.target.tagName==='VIDEO')choose(e.target);},true);"
+                + "scan();new MutationObserver(scan).observe(document.documentElement,{childList:true,subtree:true});"
+                + "setInterval(scan,1200);}catch(e){}})();";
+        if (Build.VERSION.SDK_INT >= 19) web.evaluateJavascript(js, null);
+        else web.loadUrl("javascript:" + js);
+    }
+
     private WebView createWebView(final Tab tab) {
         WebView web = new WebView(this);
         WebSettings s = web.getSettings();
@@ -797,27 +845,21 @@ public class MainActivity extends Activity {
                     view.loadUrl(uri.buildUpon().scheme("https").build().toString());
                     return true;
                 }
+                if ("rishat-download".equalsIgnoreCase(scheme)) {
+                    String mediaUrl = uri.getQueryParameter("url");
+                    if (request.hasGesture() && mediaUrl != null
+                            && (mediaUrl.startsWith("https://") || mediaUrl.startsWith("http://"))) {
+                        requestDownload(mediaUrl, view.getSettings().getUserAgentString(), null, "video/*");
+                    } else {
+                        Toast.makeText(MainActivity.this, "এই ভিডিওটি সরাসরি ডাউনলোড করা যাচ্ছে না", Toast.LENGTH_SHORT).show();
+                    }
+                    return true;
+                }
                 if (request.hasGesture() && (scheme.equalsIgnoreCase("tel") || scheme.equalsIgnoreCase("mailto")
                         || scheme.equalsIgnoreCase("sms"))) {
                     try { startActivity(new Intent(Intent.ACTION_VIEW, uri)); } catch (ActivityNotFoundException ignored) { }
                 }
                 return true;
-            }
-
-            @Override public void onLoadResource(WebView view, String resourceUrl) {
-                String lower = resourceUrl == null ? "" : resourceUrl.toLowerCase(java.util.Locale.ROOT);
-                if (!(lower.contains(".mp4") || lower.contains(".webm") || lower.contains(".m4v")
-                        || lower.contains(".mov") || lower.contains(".m3u8"))) return;
-                if (!offeredVideoUrls.add(resourceUrl)) return;
-                new Handler(Looper.getMainLooper()).post(() -> {
-                    if (isFinishing() || !isActive(tab)) return;
-                    new AlertDialog.Builder(MainActivity.this).setTitle("ভিডিও লিংক শনাক্ত")
-                            .setMessage("এই পেজে একটি ভিডিও লিংক পাওয়া গেছে। ডাউনলোড করতে চান?")
-                            .setPositiveButton("ডাউনলোড", (d, w) -> requestDownload(resourceUrl,
-                                    view.getSettings().getUserAgentString(), null,
-                                    lower.contains(".m3u8") ? "application/vnd.apple.mpegurl" : "video/*"))
-                            .setNegativeButton("না", null).show();
-                });
             }
 
             @Override public void onPageStarted(WebView view, String url, Bitmap favicon) {
@@ -834,6 +876,7 @@ public class MainActivity extends Activity {
 
             @Override public void onPageFinished(WebView view, String url) {
                 tab.url = url;
+                installVideoDownloadDetector(view);
                 String title = view.getTitle();
                 boolean errorPage = "পেজ লোড হয়নি".equals(title);
                 if (!errorPage) {
